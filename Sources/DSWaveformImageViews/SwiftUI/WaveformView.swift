@@ -13,6 +13,7 @@ public struct WaveformView<Content: View>: View {
     @State private var samples: [Float] = []
     @State private var rescaleTimer: Timer?
     @State private var currentSize: CGSize = .zero
+    @Binding private var errorLoading: Bool
 
     /**
      Creates a new WaveformView which displays a waveform for the audio at `audioURL`.
@@ -29,25 +30,34 @@ public struct WaveformView<Content: View>: View {
         configuration: Waveform.Configuration = Waveform.Configuration(damping: .init(percentage: 0.125, sides: .both)),
         renderer: WaveformRenderer = LinearWaveformRenderer(),
         priority: TaskPriority = .userInitiated,
+        errorLoading: Binding<Bool>,
         @ViewBuilder content: @escaping (WaveformShape) -> Content
     ) {
         self.audioURL = audioURL
         self.configuration = configuration
         self.renderer = renderer
+        self._errorLoading = errorLoading
         self.priority = priority
         self.content = content
     }
-
+    
     public var body: some View {
         GeometryReader { geometry in
-            content(WaveformShape(samples: samples, configuration: configuration, renderer: renderer))
-                .onAppear {
-                    guard samples.isEmpty else { return }
-                    update(size: geometry.size, url: audioURL, configuration: configuration)
-                }
-                .modifier(OnChange(of: geometry.size, action: { newValue in update(size: newValue, url: audioURL, configuration: configuration, delayed: true) }))
-                .modifier(OnChange(of: audioURL, action: { newValue in update(size: geometry.size, url: audioURL, configuration: configuration) }))
-                .modifier(OnChange(of: configuration, action: { newValue in update(size: geometry.size, url: audioURL, configuration: newValue) }))
+            if errorLoading {
+                Text("Failed to load audio")
+                    .foregroundColor(.red)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .font(.subheadline)
+            } else {
+                content(WaveformShape(samples: samples, configuration: configuration, renderer: renderer))
+                    .onAppear {
+                        guard samples.isEmpty else { return }
+                        update(size: geometry.size, url: audioURL, configuration: configuration)
+                    }
+                    .modifier(OnChange(of: geometry.size, action: { newValue in update(size: newValue, url: audioURL, configuration: configuration, delayed: true) }))
+                    .modifier(OnChange(of: audioURL, action: { newValue in update(size: geometry.size, url: audioURL, configuration: configuration) }))
+                    .modifier(OnChange(of: configuration, action: { newValue in update(size: geometry.size, url: audioURL, configuration: newValue) }))
+            }
         }
     }
 
@@ -59,13 +69,16 @@ public struct WaveformView<Content: View>: View {
                 do {
                     let samplesNeeded = Int(size.width * configuration.scale)
                     let samples = try await WaveformAnalyzer().samples(fromAudioAt: url, count: samplesNeeded)
-
+                    
                     await MainActor.run {
                         self.currentSize = size
                         self.samples = samples
+                        self.errorLoading = false
                     }
                 } catch {
-                    assertionFailure(error.localizedDescription)
+                    await MainActor.run {
+                        self.errorLoading = true
+                    }
                 }
             }
         }
@@ -93,9 +106,10 @@ public extension WaveformView {
         audioURL: URL,
         configuration: Waveform.Configuration = Waveform.Configuration(damping: .init(percentage: 0.125, sides: .both)),
         renderer: WaveformRenderer = LinearWaveformRenderer(),
-        priority: TaskPriority = .userInitiated
+        priority: TaskPriority = .userInitiated,
+        errorLoading: Binding<Bool>
     ) where Content == AnyView {
-        self.init(audioURL: audioURL, configuration: configuration, renderer: renderer, priority: priority) { shape in
+        self.init(audioURL: audioURL, configuration: configuration, renderer: renderer, priority: priority, errorLoading: errorLoading) { shape in
             AnyView(DefaultShapeStyler().style(shape: shape, with: configuration))
         }
     }
@@ -115,9 +129,10 @@ public extension WaveformView {
         configuration: Waveform.Configuration = Waveform.Configuration(damping: .init(percentage: 0.125, sides: .both)),
         renderer: WaveformRenderer = LinearWaveformRenderer(),
         priority: TaskPriority = .userInitiated,
+        errorLoading: Binding<Bool>,
         @ViewBuilder placeholder: @escaping () -> Placeholder
     ) where Content == _ConditionalContent<Placeholder, AnyView> {
-        self.init(audioURL: audioURL, configuration: configuration, renderer: renderer, priority: priority) { shape in
+        self.init(audioURL: audioURL, configuration: configuration, renderer: renderer, priority: priority, errorLoading: errorLoading) { shape in
             if shape.isEmpty {
                 placeholder()
             } else {
@@ -142,10 +157,11 @@ public extension WaveformView {
         configuration: Waveform.Configuration = Waveform.Configuration(damping: .init(percentage: 0.125, sides: .both)),
         renderer: WaveformRenderer = LinearWaveformRenderer(),
         priority: TaskPriority = .userInitiated,
+        errorLoading: Binding<Bool>,
         @ViewBuilder content: @escaping (WaveformShape) -> ModifiedContent,
         @ViewBuilder placeholder: @escaping () -> Placeholder
     ) where Content == _ConditionalContent<Placeholder, ModifiedContent> {
-        self.init(audioURL: audioURL, configuration: configuration, renderer: renderer, priority: priority) { shape in
+        self.init(audioURL: audioURL, configuration: configuration, renderer: renderer, priority: priority, errorLoading: errorLoading) { shape in
             if shape.isEmpty {
                 placeholder()
             } else {
